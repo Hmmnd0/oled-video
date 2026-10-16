@@ -1,0 +1,7 @@
+{
+  "name": "video-stream",
+  "private": true,
+  "type": "module",
+  "description": "Play a video in the browser and stream it to the ESP32-C3 OLED",
+  "scripts": { "start": "node server.mjs" }
+}

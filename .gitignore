@@ -1,0 +1,19 @@
+# build output and downloaded libraries
+.pio/
+node_modules/
+# converted videos and encoded uploads
+.cache/
+# videos, ROMs and saves never belong in the repo
+*.mp4
+*.mov
+*.mkv
+*.avi
+*.webm
+*.bin
+*.gb
+*.gbc
+*.sav
+# editor / OS junk
+.DS_Store
+.vscode/
+.claude/

@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Video → OLED</title>
+<style>
+  :root {
+    --bg: #14161a; --panel: #1d2026; --line: #2c3038; --text: #e6e8eb; --muted: #8a9099;
+    --accent: #8bd450; --warn: #e8b04a; --bad: #e5604f;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, sans-serif; }
+  header { display: flex; align-items: center; gap: 10px; padding: 12px 20px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header .grow { flex: 1; }
+  .status { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .dot.on { background: var(--accent); } .dot.warn { background: var(--warn); }
+  button, select, input, label.btn { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+  button, label.btn { padding: 7px 12px; cursor: pointer; white-space: nowrap; }
+  button:hover, label.btn:hover { border-color: #4a505c; }
+  button.primary { background: var(--accent); color: #10140c; border-color: var(--accent); font-weight: 600; }
+  button:disabled { opacity: .45; cursor: default; }
+  input[type=text] { padding: 7px 10px; }
+  input[type=file] { display: none; }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 20px; padding: 20px; max-width: 1300px; margin: 0 auto; }
+  @media (max-width: 960px) { main { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  .card h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 12px; font-weight: 600; }
+  .sources { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .sources .yt { display: flex; gap: 6px; flex: 1; min-width: 260px; }
+  .sources .yt input { flex: 1; min-width: 0; }
+  #stage { position: relative; background: #000; border-radius: 6px; aspect-ratio: 16 / 9; overflow: hidden; display: flex; align-items: center; justify-content: center; }
+  #stage video, #stage iframe { width: 100%; height: 100%; border: 0; display: block; background: #000; }
+  #drop { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 8px; align-items: center; justify-content: center; text-align: center; color: var(--muted); border: 2px dashed var(--line); border-radius: 6px; padding: 20px; }
+  body.dragging #drop { border-color: var(--accent); color: var(--text); background: rgba(20,22,26,.9); display: flex !important; z-index: 5; }
+  .note { color: var(--muted); font-size: 12px; margin: 10px 0 0; }
+  .warn { color: var(--warn); }
+  #oled { width: 100%; aspect-ratio: 72 / 40; image-rendering: pixelated; background: #000; border-radius: 4px; border: 6px solid #050505; display: block; }
+  .meta { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 12px; margin-top: 8px; font-variant-numeric: tabular-nums; }
+  .row { display: flex; align-items: center; gap: 10px; margin: 10px 0; }
+  .row > span:first-child { width: 92px; color: var(--muted); flex-shrink: 0; }
+  .row input[type=range] { flex: 1; accent-color: var(--accent); }
+  .row output { width: 40px; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .seg { display: flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; flex: 1; }
+  .seg button { flex: 1; border: 0; border-radius: 0; padding: 6px 4px; background: transparent; color: var(--muted); }
+  .seg button + button { border-left: 1px solid var(--line); }
+  .seg button.on { background: #2a2f37; color: var(--text); }
+  .stack { display: grid; gap: 16px; align-content: start; }
+  .edbar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+  .edbar .grow { flex: 1; }
+  .edbar .time { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 130px; }
+  #timeline { display: block; width: 100%; height: 92px; border-radius: 6px; touch-action: none; }
+  #clipProps { margin-top: 8px; }
+  #clipProps .row select, #clipProps .row input[type=number] { padding: 4px 6px; }
+  .progress { height: 6px; background: #22262d; border-radius: 3px; overflow: hidden; margin-top: 10px; display: none; }
+  .progress div { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+  dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 16px; width: min(560px, 92vw); }
+  dialog::backdrop { background: rgba(0,0,0,.55); }
+  pre.log { background: #0b0d10; border: 1px solid var(--line); border-radius: 6px; padding: 8px; max-height: 320px; overflow: auto; font: 11px ui-monospace, monospace; white-space: pre-wrap; }
+  #unsupported { display: none; background: #3a1f1c; color: #ffd2cc; padding: 8px 20px; }
+</style>
+</head>
+<body>
+<div id="unsupported">This browser has no Web Serial, so it can't talk to the board. Open this page in Chrome or Edge.</div>
+<header>
+  <h1>Video → OLED</h1>
+  <span class="status" id="sourceText">No video</span>
+  <span class="grow"></span>
+  <span class="status"><span class="dot" id="serialDot"></span><span id="serialText">Board not connected</span></span>
+  <button id="saveBtn" title="Encode the whole video with these settings and store it on the board">Save to board</button>
+  <button id="flashBtn" title="Put the player/receiver firmware on the board (once)">Flash receiver</button>
+  <button class="primary" id="connectBtn">Connect board</button>
+</header>
+
+<main>
+  <div class="stack">
+  <section class="card">
+    <h2>Video</h2>
+    <div class="sources">
+      <label class="btn">Open video files…<input type="file" id="fileInput" multiple accept="video/*,.mkv,.avi,.wmv,.flv,.mov,.m4v,.ts,.mts,.m2ts,.3gp,.mpg,.mpeg,.ogv"></label>
+      <div class="yt"><input type="text" id="ytInput" placeholder="Paste a YouTube link"><button id="ytBtn">Load</button></div>
+      <button id="captureBtn" title="Mirror another tab or window">Capture a tab or window…</button>
+    </div>
+    <div id="stage">
+      <div id="drop">
+        <strong>Drop video files here</strong>
+        <span>MP4, MOV, WebM play straight away. MKV, AVI, WMV and other formats are converted first.</span>
+      </div>
+    </div>
+    <div class="progress" id="progress"><div></div></div>
+    <p class="note" id="sourceNote">Sound plays here in the browser; the picture goes to the OLED in sync.</p>
+  </section>
+
+  <section class="card">
+    <h2>Edit</h2>
+    <div class="edbar">
+      <button id="edRewind" title="Back to the beginning (Home)">⏮</button>
+      <button id="edPlay" title="Play / pause (Space)">▶</button>
+      <span class="time" id="edTime">0:00.00 / 0:00.00</span>
+      <button id="edSplit" title="Split the clip at the playhead (S)">✂ Split</button>
+      <button id="edDelete" title="Delete the selected clip (Del)">Delete clip</button>
+      <span class="grow"></span>
+      <button id="edClear" title="Remove every clip">Clear</button>
+    </div>
+    <canvas id="timeline"></canvas>
+    <p class="note">Drag clips to reorder · drag their edges to trim · click a ◆ between clips to set the transition · scroll to zoom · ← → step a frame</p>
+    <div id="clipProps"></div>
+  </section>
+  </div>
+
+  <div class="stack">
+    <section class="card">
+      <h2>OLED preview (72×40)</h2>
+      <canvas id="oled" width="72" height="40"></canvas>
+      <div class="meta"><span id="sentFps">sent 0 fps</span><span id="boardFps">board –</span></div>
+    </section>
+
+    <section class="card">
+      <h2>Picture</h2>
+      <p class="note" id="lookTarget" style="margin:0 0 6px"></p>
+      <div id="lookButtons" style="display:none;gap:6px;flex-wrap:wrap;margin-bottom:6px">
+        <button id="lookAll" title="Give every clip this look">Copy to all clips</button>
+        <button id="lookReset" title="Go back to the default look">Reset clip</button>
+        <button id="lookDefault" title="Make this look the default for clips you haven't changed">Make default</button>
+      </div>
+      <div class="row"><span>Framing</span>
+        <div class="seg" id="fitSeg"><button data-v="crop">Crop to fill</button><button data-v="fit">Fit</button><button data-v="stretch">Stretch</button></div>
+      </div>
+      <div class="row" id="panRow"><span>Keep</span><input type="range" id="pan" min="0" max="100" step="1" title="Which part of the picture to keep when cropping"><output id="panOut"></output></div>
+      <div class="row"><span title="Applies to the whole video">Shades (all)</span>
+        <div class="seg" id="shadesSeg"><button data-v="2">Black &amp; white</button><button data-v="4">4 greys</button></div>
+      </div>
+      <div class="row"><span>Dither</span>
+        <select id="dither" style="flex:1">
+          <option value="atkinson">Atkinson (crisp)</option>
+          <option value="floyd">Floyd–Steinberg (smooth)</option>
+          <option value="bayer">Ordered (pattern)</option>
+          <option value="threshold">None (threshold)</option>
+        </select>
+      </div>
+      <div class="row"><span>Brightness</span><input type="range" id="brightness" min="-100" max="100" step="1"><output id="brightnessOut"></output></div>
+      <div class="row"><span>Contrast</span><input type="range" id="contrast" min="0.5" max="3" step="0.05"><output id="contrastOut"></output></div>
+      <div class="row"><span>Gamma</span><input type="range" id="gamma" min="0.4" max="2.5" step="0.05" title="Below 1 lifts the shadows; above 1 deepens them"><output id="gammaOut"></output></div>
+      <div class="row"><span>Sharpen</span><input type="range" id="sharpen" min="0" max="2" step="0.1"><output id="sharpenOut"></output></div>
+      <div class="row"><span>Invert</span><input type="checkbox" id="invert"></div>
+      <p class="note" id="shadesNote">4 greys flickers pixels to make greys; Black &amp; white has no flicker.</p>
+    </section>
+  </div>
+</main>
+
+<dialog id="dlg"></dialog>
+<script type="module" src="app.js"></script>
+</body>
+</html>
