@@ -7,32 +7,140 @@ Play videos on a **0.42" 72×40 OLED** attached to an **ESP32-C3**: stream them 
 - **Editor:** a timeline with trimming, splitting, reordering, transitions, and per-clip picture settings.
 - **Sources:** MP4, MOV and WebM directly; MKV, AVI, WMV and others via ffmpeg; YouTube links via tab sharing; any tab or window.
 
-## Hardware
+## What you need
 
-An ESP32-C3 board with a built-in 0.42" SSD1306 OLED (the common "ESP32-C3 0.42 OLED" boards). The display is on I2C **SDA = GPIO 5, SCL = GPIO 6**, and **BOOT = GPIO 9** controls playback. Change the pins at the top of `firmware/src/main.cpp` if yours differ.
+**Hardware**
+- An **ESP32-C3 board with a built-in 0.42" OLED**: the common "ESP32-C3 0.42 OLED" mini boards, with 4 MB of flash.
+  - The display is on I2C **SDA = GPIO 5, SCL = GPIO 6**.
+  - The **BOOT** button (GPIO 9) controls playback.
+  - If your board is wired differently, change the pins at the top of `firmware/src/main.cpp`.
+- A **USB-C data cable**. Many cables are charge-only and won't work; if the board never shows up, try another cable first.
 
-## Requirements
+**Software** (installation steps below)
 
-- [PlatformIO](https://platformio.org/) (`pio`) to build and upload the firmware
-- Node.js 18 or newer for the local server
-- Chrome or Edge, since live streaming uses Web Serial
-- [ffmpeg](https://ffmpeg.org/), only for converting formats the browser can't play
+| Tool | Why | Check it with |
+|---|---|---|
+| [Node.js](https://nodejs.org/) 18 or newer | runs the local web server | `node --version` |
+| [PlatformIO Core](https://platformio.org/install/cli) | builds and uploads the board's firmware | `pio --version` |
+| [Git](https://git-scm.com/) | downloads this project | `git --version` |
+| [ffmpeg](https://ffmpeg.org/) (optional) | converts formats the browser can't play (MKV, AVI, WMV…) | `ffmpeg -version` |
+| **Chrome** or **Edge** | the page talks to the board over USB with Web Serial, which Safari and Firefox don't have | |
 
-## Quick start
+The web server has no npm dependencies, so there's no `npm install` step.
+
+## Installation
+
+### macOS
+
+1. Install [Homebrew](https://brew.sh) if you don't have it, by pasting this into Terminal:
+   ```bash
+   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+   ```
+2. Install the tools:
+   ```bash
+   brew install node platformio git ffmpeg
+   ```
+3. No USB driver is needed: the ESP32-C3's built-in USB shows up as `/dev/cu.usbmodem…`.
+
+### Windows 10 / 11
+
+1. Open **PowerShell** and install the tools with winget:
+   ```powershell
+   winget install OpenJS.NodeJS.LTS
+   winget install Git.Git
+   winget install Gyan.FFmpeg
+   winget install Python.Python.3.12
+   ```
+2. **Close and reopen PowerShell** so the new tools are on your PATH, then install PlatformIO:
+   ```powershell
+   py -m pip install --user platformio
+   ```
+3. Check it with `pio --version`.
+   - If `pio` isn't found, add the folder that pip printed a "not on PATH" warning about to your PATH, usually `%APPDATA%\Python\Python312\Scripts`. Do this in Settings → System → About → Advanced system settings → Environment Variables.
+   - Then reopen PowerShell.
+4. No USB driver is needed: Windows 10 and 11 include one for the ESP32-C3. The board appears as a **COM** port.
+
+### Linux (Ubuntu / Debian)
+
+1. Install the tools:
+   ```bash
+   sudo apt update
+   sudo apt install git ffmpeg pipx curl
+   pipx install platformio && pipx ensurepath
+   ```
+2. Install Node.js 18 or newer. Older Ubuntu releases ship an old version, so check `node --version`; if it's below 18, install the current LTS:
+   ```bash
+   curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
+   sudo apt install nodejs
+   ```
+3. Allow your user to access the USB serial port, then **log out and back in**:
+   ```bash
+   sudo usermod -aG dialout $USER
+   curl -fsSL https://raw.githubusercontent.com/platformio/platformio-core/develop/platformio/assets/system/99-platformio-udev.rules | sudo tee /etc/udev/rules.d/99-platformio-udev.rules
+   sudo udevadm control --reload-rules && sudo udevadm trigger
+   ```
+4. Use Chrome, Chromium or Edge. The board appears as `/dev/ttyACM0`.
+
+## Getting started
+
+### 1. Download the project
+
+```bash
+git clone https://github.com/Hmmnd0/oled-video.git
+cd oled-video
+```
+
+### 2. (Optional) Pre-build the firmware
+
+The first build downloads the ESP32 toolchain (a few hundred MB, 5–10 minutes). Doing it now means the first flash from the page is quick:
+
+```bash
+cd firmware
+pio run
+cd ..
+```
+
+It should end with `[SUCCESS]`.
+
+### 3. Start the server
 
 ```bash
 cd web
 npm start
 ```
 
-Open **http://localhost:8100** in Chrome or Edge, then:
+It prints `Video → OLED: http://localhost:8100`. Leave this window open while you use the page; **Ctrl+C** stops it. To use another port, run `PORT=8200 npm start` (on Windows PowerShell: `$env:PORT=8200; npm start`).
 
-1. **Flash receiver**, once: builds and uploads the firmware. This re-divides the flash into 1 MB for the program and ~2.9 MB for video.
-2. **Connect board** and pick the `usbmodem…` port.
-3. **Open video files** or drop them on the page. Each becomes a clip on the timeline, and the OLED shows it live.
-4. **Save to board** encodes the whole edit and writes it to the board, which then plays it on its own.
+### 4. Open the page
 
-On the board: **BOOT** pauses and resumes, and **holding BOOT** for 1 s restarts the video.
+Go to **http://localhost:8100** in **Chrome or Edge**.
+
+### 5. Put the firmware on the board (once)
+
+1. Plug the board in.
+2. Click **Flash receiver**. A log window shows the build and upload, ending with `[SUCCESS]` and "Done".
+3. The OLED then shows **"USB SCREEN / waiting for PC / no video saved"**.
+
+You only need to do this once, or again after flashing something else onto the board. It re-divides the board's flash into 1 MB for the program and ~2.9 MB for video.
+
+### 6. Connect and play
+
+1. Click **Connect board** and choose the board in Chrome's list. It's named something like *USB JTAG/serial debug unit*, or `cu.usbmodem…` / `COM…` / `ttyACM…`. The page restarts the board and the status turns green.
+2. **Open video files** (or drag them onto the page). Each becomes a clip on the timeline, and it plays with sound while the OLED mirrors it.
+3. Adjust the picture in the **Picture** panel; the OLED preview shows exactly what the board shows.
+
+### 7. Save a video onto the board
+
+1. Click **Save to board** and choose a frame rate (12–24 fps is plenty).
+2. The page encodes your whole edit, then uploads the firmware and the video. Your page disconnects from the board automatically while this happens.
+3. When it says "Done", unplug the board and power it from any USB charger. It plays the video in a loop on its own.
+
+On the board: **BOOT** pauses and resumes, and **holding BOOT for 1 s** restarts the video.
+
+### Other sources
+
+- **YouTube:** paste a link and click Load. When Chrome asks what to share, choose **this tab**. (See [YouTube](#youtube) below.)
+- **Capture a tab or window…:** mirror anything else on screen.
 
 ## Editing
 
@@ -60,6 +168,22 @@ On the board: **BOOT** pauses and resumes, and **holding BOOT** for 1 s restarts
 ## YouTube
 
 A page can't read pixels from the YouTube player, and downloading videos is against YouTube's terms. So the video plays in the embedded player, and Chrome asks to share **this tab**; the page crops out the player and streams that. Save to board needs a video file.
+
+## Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| The page says this browser has no Web Serial | Use **Chrome** or **Edge**. Safari and Firefox don't support it, and Brave turns it off by default. |
+| "The board was not found on USB" | Try another USB cable (charge-only cables are very common), or another USB port. Close other programs using the board (Arduino IDE, serial monitors). Run `pio device list`: the board should appear with `VID:PID=303A`. |
+| Upload fails with "Failed to connect" or "port is busy" | Click **Disconnect** on the page first. If it still fails, hold **BOOT**, unplug and re-plug the board, release BOOT, and try again. That forces it into upload mode. |
+| OLED shows "USB SCREEN / waiting for PC" | That's the idle screen: the board is fine and waiting for frames. Connect the page and play a video. |
+| OLED froze after clicking Connect board | The board landed in its upload mode. Press its **RST** button, or unplug and re-plug it. |
+| OLED stays completely black | Your board may use different pins. Check the I2C pins at the top of `firmware/src/main.cpp`, then flash again. |
+| `pio: command not found` | Reopen your terminal after installing. On Windows, see the PATH note above. |
+| A video won't play or convert | Install **ffmpeg** (see Installation), then restart `npm start`. |
+| "Too big for the board" when saving | Lower the frame rate, use **Black & white**, or use the **Ordered** or **None** dither, which compress much better. |
+| Greys flicker | Use **Black & white**, which never flickers. |
+| The page shows an old version after updating | Reload with **Cmd+Shift+R** (Mac) or **Ctrl+Shift+R** (Windows/Linux). |
 
 ## How it works
 

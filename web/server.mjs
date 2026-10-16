@@ -14,6 +14,8 @@ const VIDEO_OFFSET = '0x110000', VIDEO_CAPACITY = 0x2F0000;   // must match firm
 const port = Number(process.env.PORT) || 8100;
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css' };
 let flashing = false;
+// On Windows, tools like pio and ffmpeg are .exe/.cmd shims that need a shell to be found
+const WIN = process.platform === 'win32';
 
 // Converted videos live here; anything older than a day is cleared at startup
 const cacheDir = path.join(here, '..', '.cache');
@@ -34,7 +36,7 @@ function convert(req, res) {
       const args = ['-hide_banner', '-y', '-i', input, '-map', '0:v:0', '-map', '0:a:0?', '-vf', "scale='min(1280,iw)':-2,format=yuv420p",
         '-c:v', encoder, ...(encoder === 'libx264' ? ['-preset', 'veryfast', '-crf', '23'] : ['-b:v', '4M']),
         '-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart', '-progress', 'pipe:1', '-nostats', output];
-      const p = spawn('ffmpeg', args);
+      const p = spawn('ffmpeg', args, { shell: WIN });
       let err = '';
       p.stdout.on('data', (d) => {
         const m = /out_time_us=(\d+)/.exec(String(d));
@@ -48,16 +50,35 @@ function convert(req, res) {
         else { fs.rmSync(input, { force: true }); res.end(`error ${err.split('\n').filter(Boolean).slice(-3).join(' | ')}\n`); }
       });
     };
-    run('h264_videotoolbox', true);
+    // Apple's hardware encoder on macOS (fast); the portable software encoder elsewhere
+    if (process.platform === 'darwin') run('h264_videotoolbox', true); else run('libx264', false);
   });
 }
 
 // Save to board: store the encoded video, install the player, then write the video
 // into the board's "video" flash partition.
-function findBoard() { return fs.readdirSync('/dev').filter((d) => /^cu\.(usbmodem|usbserial|wchusbserial)/.test(d))[0]; }
+// Find the ESP32-C3 on any OS: ask PlatformIO for the serial ports and pick the one with
+// Espressif's USB vendor ID (303A). macOS: /dev/cu.usbmodem…, Linux: /dev/ttyACM…, Windows: COM…
+function findBoard() {
+  return new Promise((resolve) => {
+    let out = '';
+    const p = spawn('pio', ['device', 'list', '--json-output'], { shell: WIN });
+    p.stdout.on('data', (d) => { out += d; });
+    p.on('error', () => resolve(null));
+    p.on('close', () => {
+      try {
+        const ports = JSON.parse(out);
+        const esp = ports.find((d) => /VID:PID=303A/i.test(d.hwid || ''));
+        const usb = ports.find((d) => /usbmodem|usbserial|ttyACM|ttyUSB/i.test(d.port || ''));
+        resolve((esp || usb)?.port || null);
+      } catch { resolve(null); }
+    });
+  });
+}
+const NO_BOARD = 'The board was not found on USB. Plug it in with a data USB cable (and disconnect this page from it), then try again.\n[exit 1]\n';
 function run(cmd, args, cwd, res) {
   return new Promise((resolve) => {
-    const p = spawn(cmd, args, { cwd, env: { ...process.env, PLATFORMIO_DISABLE_PROGRESSBAR: 'true' } });
+    const p = spawn(cmd, args, { cwd, shell: WIN, env: { ...process.env, PLATFORMIO_DISABLE_PROGRESSBAR: 'true' } });
     p.stdout.on('data', (d) => res.write(d));
     p.stderr.on('data', (d) => res.write(d));
     p.on('error', (e) => { res.write(`\n[could not run ${cmd}: ${e.message}]\n`); resolve(1); });
@@ -72,16 +93,16 @@ function saveVideo(req, res) {
   out.on('finish', async () => {
     const size = fs.statSync(file).size;
     if (size > VIDEO_CAPACITY) return res.end(`The video is ${size} bytes but the board holds ${VIDEO_CAPACITY}.\n[exit 1]\n`);
-    const board = findBoard();
-    if (!board) return res.end('The board was not found on USB. Plug it in (and disconnect this page from it), then try again.\n[exit 1]\n');
+    const board = await findBoard();
+    if (!board) return res.end(NO_BOARD);
     flashing = true;
     try {
-      res.write(`Video: ${(size / 1024).toFixed(0)} KB of ${(VIDEO_CAPACITY / 1024).toFixed(0)} KB. Board on /dev/${board}\n\n1/2 Installing the player firmware…\n`);
-      let code = await run('pio', ['run', '-t', 'upload', '--upload-port', '/dev/' + board], firmwareDir, res);
+      res.write(`Video: ${(size / 1024).toFixed(0)} KB of ${(VIDEO_CAPACITY / 1024).toFixed(0)} KB. Board on ${board}\n\n1/2 Installing the player firmware…\n`);
+      let code = await run('pio', ['run', '-t', 'upload', '--upload-port', board], firmwareDir, res);
       if (code !== 0) return res.end(`\n[exit ${code}]\n`);
       await new Promise((r) => setTimeout(r, 1500));   // let the board re-appear after its reset
       res.write('\n2/2 Writing the video…\n');
-      code = await run('pio', ['pkg', 'exec', '--package', 'tool-esptoolpy', '--', 'esptool.py', '--chip', 'esp32c3', '--port', '/dev/' + (findBoard() || board),
+      code = await run('pio', ['pkg', 'exec', '--package', 'tool-esptoolpy', '--', 'esptool.py', '--chip', 'esp32c3', '--port', (await findBoard()) || board,
         '--baud', '921600', 'write_flash', VIDEO_OFFSET, file], firmwareDir, res);
       res.end(`\n[exit ${code}]\n`);
     } finally { flashing = false; }
@@ -111,15 +132,13 @@ http.createServer((req, res) => {
   if (url.pathname === '/api/flash' && req.method === 'POST') {
     res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
     if (flashing) return res.end('Already flashing.\n[exit 1]\n');
-    const ports = fs.readdirSync('/dev').filter((d) => /^cu\.(usbmodem|usbserial|wchusbserial)/.test(d));
-    if (!ports.length) return res.end('The board was not found on USB. Plug it in (and disconnect this page from it), then try again.\n[exit 1]\n');
     flashing = true;
-    res.write(`Board found on /dev/${ports[0]}\n`);
-    const p = spawn('pio', ['run', '-t', 'upload', '--upload-port', '/dev/' + ports[0]], { cwd: firmwareDir, env: { ...process.env, PLATFORMIO_DISABLE_PROGRESSBAR: 'true' } });
-    p.stdout.on('data', (d) => res.write(d));
-    p.stderr.on('data', (d) => res.write(d));
-    p.on('error', (e) => res.write(`\n[could not run pio: ${e.message}]\n`));
-    p.on('close', (code) => { flashing = false; res.end(`\n[exit ${code}]\n`); });
+    findBoard().then(async (board) => {
+      if (!board) return res.end(NO_BOARD);
+      res.write(`Board found on ${board}\n`);
+      const code = await run('pio', ['run', '-t', 'upload', '--upload-port', board], firmwareDir, res);
+      res.end(`\n[exit ${code}]\n`);
+    }).finally(() => { flashing = false; });
     return;
   }
   let rel = decodeURIComponent(url.pathname);
